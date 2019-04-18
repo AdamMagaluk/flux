@@ -25,25 +25,25 @@ func TestFromSocket_NewQuery(t *testing.T) {
 	tests := []querytest.NewQueryTestCase{
 		{
 			Name: "from no args",
-			Raw: `import "socket"
-socket.from()`,
+			Raw: `import "zetta"
+zetta.from()`,
 			WantErr: true,
 		},
 		{
 			Name: "from wrong decoder",
-			Raw: `import "socket"
-socket.from(url: "url", decoder: "wrong")`,
+			Raw: `import "zetta"
+zetta.from(url: "url", decoder: "wrong")`,
 			WantErr: true,
 		},
 		{
 			Name: "from ok",
-			Raw: `import "socket"
-socket.from(url: "url", decoder: "line") |> range(start:-4h, stop:-2h) |> sum()`,
+			Raw: `import "zetta"
+zetta.from(url: "url", decoder: "line") |> range(start:-4h, stop:-2h) |> sum()`,
 			Want: &flux.Spec{
 				Operations: []*flux.Operation{
 					{
 						ID: "fromSocket0",
-						Spec: &socket.FromSocketOpSpec{
+						Spec: &zetta.FromZettaOpSpec{
 							URL:     "url",
 							Decoder: "line",
 						},
@@ -92,7 +92,7 @@ func TestFromSocketOperation_Marshaling(t *testing.T) {
 	data := []byte(`{"id":"fromSocket","kind":"fromSocket","spec":{"url":"url","decoder":"csv"}}`)
 	op := &flux.Operation{
 		ID: "fromSocket",
-		Spec: &socket.FromSocketOpSpec{
+		Spec: &zetta.FromZettaOpSpec{
 			URL:     "url",
 			Decoder: "csv",
 		},
@@ -103,13 +103,13 @@ func TestFromSocketOperation_Marshaling(t *testing.T) {
 func TestFromSocketSource_Run(t *testing.T) {
 	testCases := []struct {
 		name  string
-		spec  *socket.FromSocketProcedureSpec
+		spec  *zetta.FromSocketProcedureSpec
 		input string
 		want  []*executetest.Table
 	}{
 		{
 			name: "raw strings",
-			spec: &socket.FromSocketProcedureSpec{Decoder: "line"},
+			spec: &zetta.FromSocketProcedureSpec{Decoder: "line"},
 			input: `this is
 a line
 socket
@@ -130,7 +130,7 @@ source
 		},
 		{
 			name: "csv",
-			spec: &socket.FromSocketProcedureSpec{Decoder: "csv"},
+			spec: &zetta.FromSocketProcedureSpec{Decoder: "csv"},
 			input: `#datatype,string,long,dateTime:RFC3339,string,string,double,boolean
 #group,false,false,false,true,true,false,true
 #default,,,,,,,
@@ -215,7 +215,7 @@ source
 			c := execute.NewTableBuilderCache(executetest.UnlimitedAllocator)
 			c.SetTriggerSpec(plan.DefaultTriggerSpec)
 			r := ioutil.NopCloser(bytes.NewReader([]byte(tc.input)))
-			ss, err := socket.NewSocketSource(tc.spec, r, &mock.AscendingTimeProvider{}, id)
+			ss, err := zetta.NewSocketSource(tc.spec, r, &mock.AscendingTimeProvider{}, id)
 			if err != nil {
 				t.Fatal(err)
 			}
