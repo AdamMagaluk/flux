@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cskr/pubsub"
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/execute"
 	"github.com/influxdata/flux/plan"
@@ -127,9 +128,13 @@ func createFromZettaSource(s plan.ProcedureSpec, dsid execute.DatasetID, a execu
 		return nil, fmt.Errorf("invalid spec type %T", s)
 	}
 
-	// known issue with url.Parse for detecting the presence of a scheme: https://github.com/golang/go/issues/19779
-	in := make(chan ZettaMessage)
-	return NewSocketSource(spec, in, dsid)
+	ps, ok := a.Dependencies()[FromZettaKind].(*pubsub.PubSub)
+	if !ok {
+		return nil, fmt.Errorf("pubsub missing from dependancy", s)
+	}
+
+	ch := ps.Sub(spec.Stream)
+	return NewZettaSource(spec, ch, ps, dsid)
 }
 
 /*
@@ -139,19 +144,21 @@ func createFromZettaSource(s plan.ProcedureSpec, dsid execute.DatasetID, a execu
 }
 */
 
-func NewSocketSource(spec *FromZettaProcedureSpec, rc chan ZettaMessage, dsid execute.DatasetID) (execute.Source, error) {
-	decoder := NewResultDecoder(&ResultDecoderConfig{})
+func NewZettaSource(spec *FromZettaProcedureSpec, rc chan interface{}, ps *pubsub.PubSub, dsid execute.DatasetID) (execute.Source, error) {
+	decoder := NewResultDecoder(&rc, ps, &ResultDecoderConfig{})
 
 	return &zettaSource{
 		d:       dsid,
 		rc:      rc,
+		ps:      ps,
 		decoder: decoder,
 	}, nil
 }
 
 type zettaSource struct {
 	d       execute.DatasetID
-	rc      chan ZettaMessage
+	rc      chan interface{}
+	ps      *pubsub.PubSub
 	decoder *ResultDecoder
 	ts      []execute.Transformation
 }
@@ -161,13 +168,15 @@ func (ss *zettaSource) AddTransformation(t execute.Transformation) {
 }
 
 func (ss *zettaSource) Run(ctx context.Context) {
-	result, err := ss.decoder.Decode(&ss.rc)
+	fmt.Println("zettaSource.Run")
+
+	result, err := ss.decoder.Decode()
 	if err != nil {
 		err = errors.Wrap(err, "decode error")
 	} else {
-		fmt.Println("Running..")
+		fmt.Println("zettaSource.Process")
 		err = result.Tables().Do(func(tbl flux.Table) error {
-			fmt.Println("ok Callback")
+			fmt.Println("zettaSource.Process Callback")
 			for _, t := range ss.ts {
 				if err := t.Process(ss.d, tbl); err != nil {
 					return err
@@ -177,9 +186,13 @@ func (ss *zettaSource) Run(ctx context.Context) {
 		})
 	}
 
-	fmt.Println("ok ss range")
+	fmt.Println("zettaSource.Finish")
 	for _, t := range ss.ts {
-		fmt.Println("ok ss range ts")
 		t.Finish(ss.d, err)
 	}
+}
+
+func InjectFromDependencies(depsMap execute.Dependencies, deps *pubsub.PubSub) error {
+	depsMap[FromZettaKind] = deps
+	return nil
 }
