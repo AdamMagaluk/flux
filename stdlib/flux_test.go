@@ -34,6 +34,7 @@ var skip = map[string]string{
 	"task_per_line":               "join produces inconsistent/racy results when table schemas do not match (https://github.com/influxdata/flux/issues/855)",
 	"rowfn_with_import":           "imported libraries are not visible in user-defined functions (https://github.com/influxdata/flux/issues/1000)",
 	"string_trim":                 "cannot reference a package function from within a row function",
+	"integral_columns":            "aggregates changed to operate on just a single columnm.",
 }
 
 var querier = querytest.NewQuerier()
@@ -99,13 +100,9 @@ func doTestRun(t testing.TB, querier *querytest.Querier, c flux.Compiler) {
 		t.Fatalf("unexpected error while executing testing.run: %v", err)
 	}
 	defer r.Done()
-	result, ok := <-r.Ready()
-	if !ok {
-		t.Fatalf("unexpected error retrieving testing.run result: %s", r.Err())
-	}
 
 	// Read all results checking for errors
-	for _, res := range result {
+	for res := range r.Results() {
 		err := res.Tables().Do(func(flux.Table) error {
 			return nil
 		})
@@ -113,23 +110,27 @@ func doTestRun(t testing.TB, querier *querytest.Querier, c flux.Compiler) {
 			t.Error(err)
 		}
 	}
+	if err := r.Err(); err != nil {
+		t.Fatalf("unexpected error retrieving testing.run result: %s", err)
+	}
 }
+
 func doTestInspect(t testing.TB, querier *querytest.Querier, c flux.Compiler) {
 	r, err := querier.C.Query(context.Background(), c)
 	if err != nil {
 		t.Fatalf("unexpected error while executing testing.inspect: %v", err)
 	}
 	defer r.Done()
-	result, ok := <-r.Ready()
-	if !ok {
-		t.Fatalf("unexpected error retrieving testing.inspect result: %s", r.Err())
-	}
+
 	// Read all results and format them
 	var out bytes.Buffer
-	for _, res := range result {
+	for res := range r.Results() {
 		if err := execute.FormatResult(&out, res); err != nil {
 			t.Error(err)
 		}
+	}
+	if err := r.Err(); err != nil {
+		t.Fatalf("unexpected error retrieving testing.inspect result: %s", err)
 	}
 	t.Log(out.String())
 }

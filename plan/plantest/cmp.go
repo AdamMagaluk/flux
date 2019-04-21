@@ -2,22 +2,44 @@ package plantest
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/plan"
 	"github.com/influxdata/flux/semantic/semantictest"
+	"github.com/influxdata/flux/stdlib/kafka"
+	"github.com/influxdata/flux/stdlib/universe"
+	"github.com/pkg/errors"
+)
+
+// CmpOptions are the options needed to compare plan.ProcedureSpecs inside plan.Spec.
+var CmpOptions = append(
+	semantictest.CmpOptions,
+	cmp.AllowUnexported(flux.Spec{}),
+	cmp.AllowUnexported(universe.JoinOpSpec{}),
+	cmpopts.IgnoreUnexported(flux.Spec{}),
+	cmpopts.IgnoreUnexported(universe.JoinOpSpec{}),
+	cmp.AllowUnexported(kafka.ToKafkaProcedureSpec{}),
+	cmpopts.IgnoreUnexported(kafka.ToKafkaProcedureSpec{}),
 )
 
 // ComparePlans compares two query plans using an arbitrary comparator function f
 func ComparePlans(p, q *plan.Spec, f func(p, q plan.Node) error) error {
+	err := compareMetadata(p, q)
+	if err != nil {
+		return err
+	}
+
 	var w, v []plan.Node
 
-	p.TopDownWalk(func(node plan.Node) error {
+	_ = p.TopDownWalk(func(node plan.Node) error {
 		w = append(w, node)
 		return nil
 	})
 
-	q.TopDownWalk(func(node plan.Node) error {
+	_ = q.TopDownWalk(func(node plan.Node) error {
 		v = append(v, node)
 		return nil
 	})
@@ -36,7 +58,30 @@ func ComparePlans(p, q *plan.Spec, f func(p, q plan.Node) error) error {
 	return nil
 }
 
-// CompareLogicalPlanNodes is a comparator fuction for LogicalPlanNodes
+// ComparePlansShallow Compares the two specs, but only compares the
+// metadata and the types of each node.  Individual fields of procedure specs
+// are not compared.
+func ComparePlansShallow(p, q *plan.Spec) error {
+	if err := ComparePlans(p, q, cmpPlanNodeShallow); err != nil {
+		return err
+	}
+	return nil
+}
+
+func compareMetadata(p, q *plan.Spec) error {
+	opts := cmpopts.IgnoreFields(plan.Spec{}, "Roots")
+	if diff := cmp.Diff(p, q, opts); diff != "" {
+		return errors.Errorf("plan metadata not equal; -want/+got:\n%v", diff)
+	}
+	return nil
+}
+
+// CompareLogicalPlans compares two logical plans.
+func CompareLogicalPlans(p, q *plan.Spec) error {
+	return ComparePlans(p, q, CompareLogicalPlanNodes)
+}
+
+// CompareLogicalPlanNodes is a comparator function for LogicalPlanNodes
 func CompareLogicalPlanNodes(p, q plan.Node) error {
 	if _, ok := p.(*plan.LogicalNode); !ok {
 		return fmt.Errorf("expected %s to be a LogicalNode", p.ID())
@@ -99,9 +144,35 @@ func cmpPlanNode(p, q plan.Node) error {
 	}
 
 	// The specifications of both procedures must be the same
-	if !cmp.Equal(p.ProcedureSpec(), q.ProcedureSpec(), semantictest.CmpOptions...) {
+	if !cmp.Equal(p.ProcedureSpec(), q.ProcedureSpec(), CmpOptions...) {
 		return fmt.Errorf("procedure specs not equal -want(%s)/+got(%s) %s",
-			p.ID(), q.ID(), cmp.Diff(p.ProcedureSpec(), q.ProcedureSpec(), semantictest.CmpOptions...))
+			p.ID(), q.ID(), cmp.Diff(p.ProcedureSpec(), q.ProcedureSpec(), CmpOptions...))
+	}
+
+	return nil
+}
+
+func cmpPlanNodeShallow(p, q plan.Node) error {
+	// Just make sure that they have the same type
+	pt, qt := reflect.TypeOf(p.ProcedureSpec()), reflect.TypeOf(q.ProcedureSpec())
+
+	_, pIsYield := p.ProcedureSpec().(plan.YieldProcedureSpec)
+	_, qIsYield := q.ProcedureSpec().(plan.YieldProcedureSpec)
+	if pIsYield && qIsYield {
+		// generated yields are produced by the planner but their specs
+		// are not public.  So consider any types that implement yield to be equal.
+		return nil
+	}
+	if pIsYield != qIsYield {
+		if pIsYield {
+			return fmt.Errorf("wanted a yield, but got a %v", qt)
+		} else {
+			return fmt.Errorf("wanted a %v, but got a yield", pt)
+		}
+	}
+
+	if pt != qt {
+		return fmt.Errorf("plan nodes have different types; -want/+got: -%v/+%v", pt, qt)
 	}
 
 	return nil
