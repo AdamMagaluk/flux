@@ -16,4 +16,5 @@ import (
 	_ "github.com/influxdata/flux/stdlib/system"
 	_ "github.com/influxdata/flux/stdlib/testing"
 	_ "github.com/influxdata/flux/stdlib/universe"
+	_ "github.com/influxdata/flux/stdlib/zetta"
 )
