@@ -19,7 +19,10 @@ import (
 func main() {
 	ctx := context.Background()
 
+	// Create a pubsub broker.
 	ps := pubsub.New(0)
+
+	// Start publishing data for a device.
 	go publish(ps)
 
 	config := control.Config{
@@ -28,15 +31,18 @@ func main() {
 		MemoryBytesQuota:     math.MaxInt64,
 	}
 
-	config.ExecutorDependencies["fromZetta"] = ps
+	// Must inject pubsub broker for dep zetta will use.
+	zetta.InjectFromDependencies(config.ExecutorDependencies, ps)
 
 	controller := control.New(config)
 
+	// When window() is added must specify the range.
 	c := lang.FluxCompiler{
 		Query: `
 		import "zetta"
-		zetta.from(stream: "device/123/12")
-		  |> window(every: 1s)
+		zetta.from(stream: "device/123/12")  
+			|> range(start: -1m, stop: 2028-05-23T00:00:00Z)
+			|> window(every: 1s)
 			|> yield()`,
 	}
 
@@ -49,11 +55,11 @@ func main() {
 	defer results.Release()
 
 	for results.More() {
-		fmt.Println("Main.HasMore")
 		result := results.Next()
 		if err := result.Tables().Do(func(tbl flux.Table) error {
 			if err := tbl.Do(func(cr flux.ColReader) error {
-				fmt.Println("Main.Do Callback")
+
+				// Print col metadata.
 				colMeta := cr.Cols()
 				fmt.Printf("Metadata: ")
 				for i := 0; i < len(colMeta); i++ {
@@ -61,7 +67,10 @@ func main() {
 				}
 				fmt.Println()
 
+				// Number of records in the table.
 				l := cr.Len()
+
+				// Print each row.
 				for i := 0; i < l; i++ {
 					fmt.Printf("Record %d:", i)
 					for j := 0; j < len(colMeta); j++ {
@@ -79,7 +88,26 @@ func main() {
 			log.Panic(err)
 		}
 	}
-	fmt.Println("NO more.")
+
+	fmt.Println("No more results.", results.Err())
+}
+
+func publish(ps *pubsub.PubSub) {
+	time.Sleep(time.Millisecond * 100)
+
+	for i := 0; i < 250; i++ {
+		hum := float64(i)
+		m := zetta.ZettaMessage{
+			Type:      "event",
+			Topic:     "device/123/12",
+			Timestamp: time.Now(),
+			Device:    "123/12",
+			Humidity:  hum,
+		}
+
+		ps.Pub(m, "device/123/12")
+		time.Sleep(time.Millisecond * 10)
+	}
 }
 
 func printValue(i, j int, c flux.ColType, cr flux.ColReader) {
@@ -108,22 +136,5 @@ func printValue(i, j int, c flux.ColType, cr flux.ColReader) {
 		if cr.Times(j).IsValid(i) {
 			fmt.Printf("%v ", cr.Times(j).Value(i))
 		}
-	}
-}
-
-func publish(ps *pubsub.PubSub) {
-	time.Sleep(time.Millisecond * 1000)
-
-	for i := 0; i < 100; i++ {
-		hum := float64(i)
-		m := zetta.ZettaMessage{
-			Type:      "event",
-			Topic:     "device/123/12",
-			Timestamp: time.Now(),
-			Device:    "123/12",
-			Humidity:  hum,
-		}
-		ps.Pub(m, "device/123/12")
-		time.Sleep(time.Millisecond * 100)
 	}
 }

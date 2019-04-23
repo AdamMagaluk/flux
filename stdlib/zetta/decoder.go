@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cskr/pubsub"
 	"github.com/influxdata/flux"
 	"github.com/influxdata/flux/execute"
 	"github.com/influxdata/flux/memory"
@@ -19,14 +18,13 @@ import (
 // Strings in `_value` are obtained from the io.Reader passed to the Decode function.
 // ResultDecoder outputs one table once the reader reaches EOF.
 type ResultDecoder struct {
-	reader *chan interface{}
-	ps     *pubsub.PubSub
+	sub    *sourceSubscription
 	config *ResultDecoderConfig
 }
 
 // NewResultDecoder creates a new result decoder from config.
-func NewResultDecoder(reader *chan interface{}, ps *pubsub.PubSub, config *ResultDecoderConfig) *ResultDecoder {
-	return &ResultDecoder{config: config, ps: ps, reader: reader}
+func NewResultDecoder(sub *sourceSubscription, config *ResultDecoderConfig) *ResultDecoder {
+	return &ResultDecoder{config: config, sub: sub}
 }
 
 // ResultDecoderConfig is the configuration for a result decoder.
@@ -34,7 +32,7 @@ type ResultDecoderConfig struct {
 }
 
 func (rd *ResultDecoder) Do(f func(flux.Table) error) error {
-
+	// Hardcod col data for now.
 	timeCol := flux.ColMeta{Label: "_time", Type: flux.TTime}
 	valueCol := flux.ColMeta{Label: "_value", Type: flux.TFloat}
 	typeCol := flux.ColMeta{Label: "type", Type: flux.TString}
@@ -64,13 +62,17 @@ func (rd *ResultDecoder) Do(f func(flux.Table) error) error {
 		return err
 	}
 
-	fmt.Println("Zetta.ResultDecoder.Do")
+	// Max batch time is 100ms.
+	maxDuration := time.Millisecond * 100
+	// Timer will fire after duration.
+	bactchTimer := time.NewTimer(maxDuration)
+
 	for {
 		select {
-		case e, ok := <-*rd.reader:
+		case e, ok := <-rd.sub.reader:
 			if !ok {
-				fmt.Println("Channel closed")
 				// Channel closed.
+				fmt.Println("Channel closed")
 				goto RETURN
 			}
 			m, ok := e.(ZettaMessage)
@@ -78,7 +80,6 @@ func (rd *ResultDecoder) Do(f func(flux.Table) error) error {
 				fmt.Println("Not ZettaMessage")
 				goto RETURN
 			}
-			fmt.Println("Got Event", m)
 
 			err = builder.AppendTime(timeIdx, values.ConvertTime(m.Timestamp))
 			if err != nil {
@@ -104,8 +105,7 @@ func (rd *ResultDecoder) Do(f func(flux.Table) error) error {
 			if err != nil {
 				return err
 			}
-		case <-time.After(1 * time.Second):
-			fmt.Println("timeout 1")
+		case <-bactchTimer.C:
 			goto RETURN
 		}
 	}
@@ -128,4 +128,63 @@ func (rd *ResultDecoder) Tables() flux.TableIterator {
 
 func (rd *ResultDecoder) Decode() (flux.Result, error) {
 	return rd, nil
+}
+
+// MultiResultDecoder reads multiple results from a single csv file.
+// Results are delimited by an empty line.
+type MultiResultDecoder struct {
+	sub    *sourceSubscription
+	config *ResultDecoderConfig
+}
+
+// NewMultiResultDecoder creates a new MultiResultDecoder.
+func NewMultiResultDecoder(s *sourceSubscription, c *ResultDecoderConfig) *MultiResultDecoder {
+	return &MultiResultDecoder{
+		sub:    s,
+		config: c,
+	}
+}
+
+func (d *MultiResultDecoder) Decode() (flux.ResultIterator, error) {
+	return &resultIterator{
+		sub:    d.sub,
+		config: d.config,
+	}, nil
+}
+
+// resultIterator iterates through the results encoded in r.
+type resultIterator struct {
+	config *ResultDecoderConfig
+	sub    *sourceSubscription
+	next   *ResultDecoder
+	err    error
+
+	canceled bool
+}
+
+func (r *resultIterator) More() bool {
+	return true
+}
+
+func (r *resultIterator) Next() flux.Result {
+	return NewResultDecoder(r.sub, r.config)
+}
+
+func (r *resultIterator) Release() {
+	if r.canceled {
+		return
+	}
+
+	// Close the subscription.
+	r.sub.close()
+
+	r.canceled = true
+}
+
+func (r *resultIterator) Err() error {
+	return r.err
+}
+
+func (r *resultIterator) Statistics() flux.Statistics {
+	return flux.Statistics{}
 }

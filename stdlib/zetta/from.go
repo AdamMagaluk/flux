@@ -1,6 +1,3 @@
-// This source gets input from a socket connection and produces tables given a decoder.
-// This is a good candidate for streaming use cases. For now, it produces a single table for everything
-// that it receives from the start to the end of the connection.
 package zetta
 
 import (
@@ -130,11 +127,27 @@ func createFromZettaSource(s plan.ProcedureSpec, dsid execute.DatasetID, a execu
 
 	ps, ok := a.Dependencies()[FromZettaKind].(*pubsub.PubSub)
 	if !ok {
-		return nil, fmt.Errorf("pubsub missing from dependancy", s)
+		return nil, fmt.Errorf("pubsub missing from dependancy %v", s)
 	}
 
 	ch := ps.Sub(spec.Stream)
-	return NewZettaSource(spec, ch, ps, dsid)
+	sub := sourceSubscription{
+		stream: spec.Stream,
+		reader: ch,
+		ps:     ps,
+	}
+	return NewZettaSource(spec, sub, dsid)
+}
+
+type sourceSubscription struct {
+	stream string
+	reader chan interface{}
+	ps     *pubsub.PubSub
+}
+
+func (s *sourceSubscription) close() {
+	s.ps.Unsub(s.reader, s.stream)
+	close(s.reader)
 }
 
 /*
@@ -144,22 +157,18 @@ func createFromZettaSource(s plan.ProcedureSpec, dsid execute.DatasetID, a execu
 }
 */
 
-func NewZettaSource(spec *FromZettaProcedureSpec, rc chan interface{}, ps *pubsub.PubSub, dsid execute.DatasetID) (execute.Source, error) {
-	decoder := NewResultDecoder(&rc, ps, &ResultDecoderConfig{})
+func NewZettaSource(spec *FromZettaProcedureSpec, sub sourceSubscription, dsid execute.DatasetID) (execute.Source, error) {
+	decoder := NewMultiResultDecoder(&sub, &ResultDecoderConfig{})
 
 	return &zettaSource{
 		d:       dsid,
-		rc:      rc,
-		ps:      ps,
 		decoder: decoder,
 	}, nil
 }
 
 type zettaSource struct {
 	d       execute.DatasetID
-	rc      chan interface{}
-	ps      *pubsub.PubSub
-	decoder *ResultDecoder
+	decoder *MultiResultDecoder
 	ts      []execute.Transformation
 }
 
@@ -167,26 +176,56 @@ func (ss *zettaSource) AddTransformation(t execute.Transformation) {
 	ss.ts = append(ss.ts, t)
 }
 
-func (ss *zettaSource) Run(ctx context.Context) {
-	fmt.Println("zettaSource.Run")
+// Method not using the MultiResultDecoder
+// func (ss *zettaSource) Run(ctx context.Context) {
+// 	fmt.Println("zettaSource.Run")
 
-	result, err := ss.decoder.Decode()
+// 	result, err := ss.decoder.Decode()
+// 	if err != nil {
+// 		err = errors.Wrap(err, "decode error")
+// 	} else {
+// 		fmt.Println("zettaSource.Process")
+// 		err = result.Tables().Do(func(tbl flux.Table) error {
+// 			fmt.Println("zettaSource.Process Callback")
+// 			for _, t := range ss.ts {
+// 				if err := t.Process(ss.d, tbl); err != nil {
+// 					return err
+// 				}
+// 			}
+// 			return nil
+// 		})
+// 	}
+
+// 	fmt.Println("zettaSource.Finish")
+// 	for _, t := range ss.ts {
+// 		t.Finish(ss.d, err)
+// 	}
+// }
+
+func (ss *zettaSource) Run(ctx context.Context) {
+	// Uses the MultiResultDecoder and will continue to pull data from the pubsub
+	// broker.
+	results, err := ss.decoder.Decode()
 	if err != nil {
 		err = errors.Wrap(err, "decode error")
 	} else {
-		fmt.Println("zettaSource.Process")
-		err = result.Tables().Do(func(tbl flux.Table) error {
-			fmt.Println("zettaSource.Process Callback")
-			for _, t := range ss.ts {
-				if err := t.Process(ss.d, tbl); err != nil {
-					return err
+		// More always returns true.
+		for results.More() {
+			result := results.Next()
+			if err := result.Tables().Do(func(tbl flux.Table) error {
+				for _, t := range ss.ts {
+					if err := t.Process(ss.d, tbl); err != nil {
+						err = errors.Wrap(err, "decode error")
+						break
+					}
 				}
+				return nil
+			}); err != nil {
+				err = errors.Wrap(err, "decode error")
+				break
 			}
-			return nil
-		})
+		}
 	}
-
-	fmt.Println("zettaSource.Finish")
 	for _, t := range ss.ts {
 		t.Finish(ss.d, err)
 	}
