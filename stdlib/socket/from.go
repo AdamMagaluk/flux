@@ -24,7 +24,7 @@ import (
 
 const FromSocketKind = "fromSocket"
 
-type FromZettaOpSpec struct {
+type FromSocketOpSpec struct {
 	URL     string `json:"url"`
 	Decoder string `json:"decoder"`
 }
@@ -39,7 +39,7 @@ func init() {
 		Return:   flux.TableObjectType,
 	}
 
-	flux.RegisterPackageValue("socket", "from", flux.FunctionValue(FromSocketKind, createFromZettaOpSpec, fromSocketSignature))
+	flux.RegisterPackageValue("socket", "from", flux.FunctionValue(FromSocketKind, createFromSocketOpSpec, fromSocketSignature))
 	flux.RegisterOpSpec(FromSocketKind, newFromSocketOp)
 	plan.RegisterProcedureSpec(FromSocketKind, newFromSocketProcedure, FromSocketKind)
 	execute.RegisterSource(FromSocketKind, createFromSocketSource)
@@ -66,8 +66,8 @@ func contains(ss []string, s string) bool {
 	return false
 }
 
-func createFromZettaOpSpec(args flux.Arguments, a *flux.Administration) (flux.OperationSpec, error) {
-	spec := new(FromZettaOpSpec)
+func createFromSocketOpSpec(args flux.Arguments, a *flux.Administration) (flux.OperationSpec, error) {
+	spec := new(FromSocketOpSpec)
 
 	if url, err := args.GetRequiredString("url"); err != nil {
 		return nil, err
@@ -91,10 +91,10 @@ func createFromZettaOpSpec(args flux.Arguments, a *flux.Administration) (flux.Op
 }
 
 func newFromSocketOp() flux.OperationSpec {
-	return new(FromZettaOpSpec)
+	return new(FromSocketOpSpec)
 }
 
-func (s *FromZettaOpSpec) Kind() flux.OperationKind {
+func (s *FromSocketOpSpec) Kind() flux.OperationKind {
 	return FromSocketKind
 }
 
@@ -105,7 +105,7 @@ type FromSocketProcedureSpec struct {
 }
 
 func newFromSocketProcedure(qs flux.OperationSpec, pa plan.Administration) (plan.ProcedureSpec, error) {
-	spec, ok := qs.(*FromZettaOpSpec)
+	spec, ok := qs.(*FromSocketOpSpec)
 	if !ok {
 		return nil, fmt.Errorf("invalid spec type %T", qs)
 	}
